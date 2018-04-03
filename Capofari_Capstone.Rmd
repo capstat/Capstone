@@ -1,0 +1,354 @@
+---
+title: "CUNY SPS Capstone Project"
+author: "Nicholas Capofari"
+date: "3/26/2018"
+output: pdf_document
+linkcolor: "blue"
+bibliography: bibliography.bib
+---
+
+# Introduction
+
+The National Basketball Association uses a 4 round playoff system to determine which of its 30 teams will be crowned NBA Champion at the end of each season.  Since the 1983-1984 season, the 8 best teams in the Eastern and Western Conference gain entry to the playoffs.  The winners of each conference meet each other in the NBA Finals.  Only playoff series within each conference were inspected for this project, the NBA Finals were excluded.  
+
+Teams are seeded 1 to 8 based upon their regular season winning percentage.  The one caveat being that the winner of each division (there are 3 divisions in each conference) is guaranteed a top 4 seed, regardless of record.  The higher seed in each round of the playoffs has home court advantage, meaning that the series will begin and end at the higher seed's arena and the majority of games will be played there.
+
+The goal of this project is to create a model that predicts whether a home team will win an NBA playoff series.  Three types of binary classifiers were chosen to model the data set:   
+
+- Support Vector Classification (SVC)
+
+- Random Forest (RFC)
+
+- K-Nearest Neighbors (KNN)
+
+# Literature Review
+
+NBA predictions are abundant.  Game predictions and playoff series predictions can be found by the click of a button.  It has been shown that using advanced statistics is more accurate predicting NBA team success compared to basic statistics.  A set of advanced statistics are the offensive and defensive four factors.  These statistics are highly correlated with NBA team performance [@Oliver].  
+
+Another useful prediction measure for NBA performance is a team's Pythagorean Winning Percentage [@Winston].  Using points scored and points allowed, the Pythagorean Win Percentage is more accurate compared to traditional winning percentage at determining the success of a team's future games.
+
+There are many types of models that can be used to predict the outcome of a binary event [@alg].  This project is only interested in models that perform well with small data sets.  
+
+For all models, and especially Support Vector Machines, hyperparamaters need to be adjusted to get the best performance [@SVM].  Without adjusting the hyperparameters, the resulting model will most likely not perform with the highest degree of accuracy.
+
+The majority of the NBA playoff data set represents a team that won the playoff series.  This is not an example of imbalanced data [@imb], but it is important to know how a data set will perform if the majority of the target values are the same.  Close to 3 of 4 home teams ending up winning an NBA playoff series.  
+
+Past research suggests that big men, specifically centers, are the most valueable players on a basketball team [@big].  Reseach conducted before the 2012-2013 may undervaue smaller players.  Since then, the average number of 3 pointers attempted per team has increased from an average of 18 per game to 28 [@nba_ref]. 
+
+# Data Collection
+
+All raw statistics were collected from [NBA-reference.com](https://www.basketball-reference.com/leagues/NBA_stats.html).  A group of NBA scraper `R` scripts that can be found [here](https://github.com/capstat/Capstone/tree/master/nba_scraper).  These scripts utilized [`R` packages](#references) that are essential to any data scraping, data muging task. 
+
+Starting with the 1983-1984 playoffs and ending with the 2016-2017 season, all playoff results were collected and sanitized.  Each observation represents a home team (which will always be the higher seeded team) regular season statistics, their opponent's regular season statistics, and the playoffs series result (boolean: True if the team won the playoff series).  All NBA Finals sries were omitted from the data set.
+
+Using each playoffs team's unique season-team link, regular season data for each team and each opponent was retrieved and added to the data set.  For each team and opponent, all offensive and defensive stats were collected.
+
+Of major importance for our model creation were Pythagorean Win Percentage and the NBA four factors [@Oliver]:
+
+ - Offensive and Defensive Effective Field Goal Percentage
+ 
+ - Offensive and Defensive Turnover Percentage
+ 
+ - Offensive and Defensive Rebounding Percentage
+ 
+ - Offensive and Defensive Free Throw Rate
+ 
+### Pythagorean Win Percentage
+
+$$Games \times ( Team\ Points^{14} \div (Team\ Points^{14} + Opponent^{14}))$$
+This formula is obtained by fitting a logistic regression model with $\log(Team\ Points \div Opponent\ Points)$ as the explanatory variable. Using this formula for all BAA, NBA, and ABA seasons, the root mean-square error (rmse) is 3.14 wins.
+
+### Four Factors
+
+##### Effective Field Goal Percentage
+
+$$(Field\ Goals + 0.5 \times Three\ Point\ Field\ Goals) \div Field\ Goals\ Attempted$$
+
+##### Turnover Percentage
+
+$$100 \times Turnovers \div (Field\ Goals\ Attempted + 0.44 \times Free\ Throws\ Attempted + Turnovers)$$
+
+##### Rebounding Percentage
+
+$$100 \times \frac{Defensive\ Rebounds \times (Team\ Minutes\ Played \div 5)}
+{Team\ Minutes\ Played \times (Team\ Defensive\ Rebounds + Opponent\ Offensive\ Rebounds)}$$
+
+To find Offensive Rebounding Percentage, switch all occurances of Defensive Rebounds to Offensive Rebounds and vice versa.
+
+##### Free Throw Rate
+
+$$Free\ Throws\ Made \div Field\ Goals\ Attempted$$
+
+### Non Factors
+
+For each team, two other statistics were derived from the available data.  First, playafoo expereience was calculated by taking the sum of all players on a team's historical playoff minutes.  Also, team balance, which attempts to deteremine whether a team relies too heavily on a single player during the course of a season.  Both of these statistics turned out to not be correlated with playoff series wins.
+
+# Model Creation
+
+The basic model that will be used as baseline for model comparison is a model that simply chooses the home team to win each series.  There were 476 playoff series in our data set, 14 series over 34 years.
+
+### By Matchup
+
+```{r table, echo=F, comment=F, message=F}
+library(knitr)
+library(scales)
+library(dplyr)
+
+t=data.frame(Seed=c(rep(1,7), rep(2,6), rep(3,4), rep(4,2),5,6))
+t$`Opponent Seed`=c(2,3,4,5,6,7,8,3,4,5,6,7,8,
+                    4,5,6,7,5,8,8,7)
+t$n=c(30,24,27,36,3,1,68,47,3,3,16,68,
+      1,2,1,68,4,68,4,1,1)
+t$`Won Series`=c(15,20,25,33,2,1,63,24,
+                 1,3,13,63,0,2,1,51,4,31,3,1,0)
+t$`Win Percent`=round(t$`Won Series`/t$n,3)
+t = arrange(t, desc(n))
+
+kable(t)
+```
+
+The meaurement we will be using to compare each model is $precision$.
+
+$$precision = \frac{True\ Positives}{True\ Positives + False\ Positives}$$
+
+Since our basic model will never produce any True Negatives or False Negatives, other metrics would be misleading.  By relying solely on precision, only when models produce win predictions will the predictions and resulting accuracy be taken into account.
+
+The basic model's $precision_{bm}$ = 0.7479.
+
+For each model created, scikit-learn's GridSearchCV was used to help determine the hyperparamters selected for each model.  GridSearchCV exhaustively generates candidates from a grid of parameter values that are specified by the user.
+
+To combat overfitting, cross-validation was utilized.  Using cross-validation splits the training data into smaller data sets, thus reducing the chances that models will overfit the trining data.
+
+### By Seed Difference
+
+```{r table1, echo=F, comment=F, message=F}
+t$`Seed Difference` = as.character(t$`Opponent Seed`-t$Seed)
+t$`Seed Difference` = ifelse(t$`Seed Difference`=="1", "one", "not one")
+t2 = t %>% 
+  group_by(`Seed Difference`) %>%
+  summarize(n=sum(n), `Won Series`=sum(`Won Series`))
+t2$`Win Percent`=round(t2$`Won Series`/t2$n,3)
+t2 = arrange(t2, desc(`Seed Difference`))
+
+kable(t2)
+```
+
+As you can see above, when the `Seed Difference` is equal to one, flipping a coin will produce better results compared to our basic model (always choosing the home team).  Because of the vast difference in the win percentages when `Seed Difference` is equal to one compared to when it is not equal to one, models were created for the following three data sets:
+
+- All observations
+
+- `Seed Difference == 1`
+
+- `Seed Difference != 1`
+
+### Model Selection
+
+Three algorithims were chosen to create the non-basic models.  Each model is an example of a binary classifier.  
+
+- Support Vector Classification (SVC)
+
+- Random Forest (RFC)
+
+- K-Nearest Neighbors (KNN)
+
+##### Support Vector Classification (SVC)
+
+A Support Vector Machine is a very powerful model that can be used for classification purposes.  These models are well suited for complex but small data sets [@Geron].  SVMs, and in turn SVCs, use soft margin classification to find a good balance between margin violations and the size between decision boundaries.
+
+##### Random Forest (RFC)
+
+A Random Forest is an ensemble of Decision Trees.  The Random Forest algorithm introduces more randomness when creating trees resulting in greater diversity in the produced trees.  RFCs can produce better models compared to Decision Trees because they trade higher bias for lower variance, thus yeilding an overall better model.
+
+##### K-Nearest Neighbors (KNN)
+
+The K-Nearest Neighbor algorithm is a data classification algorithm that attempts to estimate how likely a data point is to be a member of a group.  By using certain distance functions, group membership is determined. 
+
+### Feature Selection
+
+For each model type, two different sets of features were selected.  The first set of features was just a single feature; the difference in Pythagorean Win Percentage of the two teams.  The second feature set was the four offensive and defensive factors for each team (16 fetures in total).  For the four factor models, the features were winnowed down in order to remove redundant or irrevelant features.  Using ANOVA F-values, 5 features were chosen to remain in the model.
+
+# Model Performance
+
+Since teams are seeded based upon their year end records, series encompassing teams that are seeded close to one aother are difficult to predict.  As seed differences increased the models were able to perform better.
+
+```{r plot0, echo=F, comment=F, message=F, fig.height=5}
+library(ggplot2)
+library(ggthemes)
+library(gridExtra)
+
+n = read.csv("models/results/combine_all.csv", stringsAsFactors = F)
+m = n
+mini = m[m$m2=="Basic Model",]
+mini$m2[mini$m2=="Basic Model"] = "KNN"
+mini2 = m[m$m2=="Basic Model",]
+mini2$m2[mini2$m2=="Basic Model"] = "SVC"
+mini3 = m[m$m2=="Basic Model",]
+mini3$m2[mini3$m2=="Basic Model"] = "RFC"
+
+m = rbind(m[m$m!="Basic Model",], rbind(mini, rbind(mini2, mini3)))
+
+ggplot(data=m) +
+  geom_point(aes(x=Seed_Diff, y=pct, color=m)) +
+  geom_line(aes(x=Seed_Diff, y=pct, group=m, color=m)) +
+  scale_color_brewer(palette="Set1") +
+  theme_few() + 
+  theme(legend.position="bottom", legend.title=element_blank(),
+        plot.title=element_text(size=16)) +
+  xlab("") + ylab("Precision") +
+  facet_wrap(~m2) +
+  ggtitle("Precision vs Seed Difference")
+```
+
+\vspace{24pt}
+
+When the difference between two teams' seeds was not one, there was one model that performed better than all of the others.  The SVC Pythagorean Win Percentage model's precision was 0.934.  
+
+```{r plot, echo=F, comment=F, message=F, fig.height=3}
+library(ggplot2)
+library(ggthemes)
+library(gridExtra)
+
+n = read.csv("models/summary.csv", stringsAsFactors = F)
+n$model_type.1 = ifelse(is.na(n$model_type.1), "Basic", n$model_type.1)
+m = n
+m = m[m$model_type!="seed_diff",]
+m = m[m$model_type!="home_team",]
+m = m[m$model_type=="four_fact",]
+m = m[m$seed_diff=="not_one",]
+p1 = 
+  ggplot(data=m) +
+  geom_bar(aes(x=model_type.1, y=pr, fill=model_type.1), 
+           stat="identity") +
+  theme_few() + 
+  theme(legend.position="none", plot.title=element_text(size=16)) +
+  xlab("") + ylab("Precision") +
+  geom_hline(yintercept=0.865900383) +
+  coord_cartesian(ylim=c(0.85,0.95)) +
+  geom_text(aes(x=3, y=0.8625), 
+            label="BM = 0.866", size=3) +
+  geom_text(aes(model_type.1, y=pr, label=round(pr,3)),
+            vjust=0) +
+  scale_y_continuous(breaks=c(0.85,0.9,0.95)) + 
+  ggtitle("Four Factor Model\nSeed Difference is not 1")
+
+m = n
+m = m[m$model_type!="seed_diff",]
+m = m[m$model_type!="home_team",]
+m = m[m$model_type=="pyt_win",]
+m = m[m$seed_diff=="not_one",]
+p2 =
+  ggplot(data=m) +
+  geom_bar(aes(x=model_type.1, y=pr, fill=model_type.1), 
+           stat="identity") +
+  theme_few() + 
+  theme(legend.position="none", plot.title=element_text(size=16)) +
+  xlab("") + ylab("") +
+  geom_hline(yintercept=0.865900383) +
+  coord_cartesian(ylim=c(0.85,0.95)) +
+  geom_text(aes(x=3, y=0.8625), 
+            label="BM = 0.866", size=3) +
+  geom_text(aes(model_type.1, y=pr, label=round(pr,3)),
+            vjust=0) +
+  scale_y_continuous(breaks=c(0.85,0.9,0.95)) + 
+  ggtitle("Pyt Win % Model\nSeed Difference is not 1")
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+\vspace{24pt}
+
+When the seed difference was equal to one, the Random Foest Four Factor model performed the best.
+
+\vspace{24pt}
+
+```{r plot2, echo=F, comment=F, message=F, fig.height=3}
+m = n
+m = m[m$model_type!="seed_diff",]
+m = m[m$model_type!="home_team",]
+m = m[m$model_type=="four_fact",]
+m = m[m$seed_diff=="is_one",]
+p1 = 
+  ggplot(data=m) +
+  geom_bar(aes(x=model_type.1, y=pr, fill=model_type.1), 
+           stat="identity") +
+  theme_few() + 
+  theme(legend.position="none", plot.title=element_text(size=16)) +
+  xlab("") + ylab("Precision") +
+  coord_cartesian(ylim=c(0.4,0.65)) +
+  geom_text(aes(x=1, y=0.475), 
+            label="BM = 0.486", size=3) +
+  geom_hline(yintercept=0.486) +
+  geom_text(aes(model_type.1, y=pr, label=round(pr,3)),
+            vjust=0) +
+  scale_y_continuous(breaks=c(0.45,.5,.55,.6,.65)) + 
+  ggtitle("Four Factor Model\nSeed Difference is 1")
+
+m = n
+m = m[m$model_type!="seed_diff",]
+m = m[m$model_type!="home_team",]
+m = m[m$model_type=="pyt_win",]
+m = m[m$seed_diff=="is_one",]
+p2 =
+  ggplot(data=m) +
+  geom_bar(aes(x=model_type.1, y=pr, fill=model_type.1), 
+           stat="identity") +
+  theme_few() + 
+  theme(legend.position="none", plot.title=element_text(size=16)) +
+  xlab("") + ylab("") +
+  coord_cartesian(ylim=c(0.4,0.65)) +
+  geom_text(aes(x=1, y=0.475), 
+            label="BM = 0.486", size=3) +
+  geom_hline(yintercept=0.486) +
+  geom_text(aes(model_type.1, y=pr, label=round(pr,3)),
+            vjust=0) +
+  scale_y_continuous(breaks=c(0.45,0.5,0.55,.6,.65)) + 
+  ggtitle("Pyt Win % Model\nSeed Difference is 1")
+
+grid.arrange(p1, p2, ncol=2)
+```
+
+\vspace{24pt}
+
+##### Combine Model for ==1
+
+In an attempt to increase precision for series where the seed difference is equal to one, a voting model was created that used each model's result as a vote for a series win or loss.  This voting model was not able to top the RFC Four Factor model's precision so it was not used.
+
+# Conclusion
+
+The model chosen to select the winner of a NBA playoff series is a hybrid model.  If the seed difference of the two teams is equal to one, the Random Forest Four Factor Model is used.  If the seed difference is greater than one, the Support Vector Machine Classifier Pythagorean Win Percentage model is used.  By choosing the appropriate model for the situation we are able to do a better job predicting the result of NBA playoff series.  These results are much more accuarte compared to simply choosing the team with the lower seed.
+
+Test data results and chart - compare to basic model
+
+# References
+
+### [scikit-learn](http://scikit-learn.org/stable/)
+
+### `R` Packages
+
+  Hadley Wickham, Romain Francois, Lionel Henry and Kirill Müller (2017).
+  dplyr: A Grammar of Data Manipulation. R package version 0.7.4.
+  https://CRAN.R-project.org/package=dplyr
+  
+  H. Wickham. ggplot2: Elegant Graphics for Data Analysis. Springer-Verlag
+  New York, 2009.
+  
+  Jeffrey B. Arnold (2017). 
+  ggthemes: Extra Themes, Scales and Geoms for 'ggplot2'. R package version 3.4.0.
+  https://CRAN.R-project.org/package=ggthemes
+
+  Hadley Wickham (2016). 
+  rvest: Easily Harvest (Scrape) Web Pages. R package version 0.3.2. 
+  https://CRAN.R-project.org/package=rvest
+
+  Hadley Wickham (2017). 
+  scales: Scale Functions for Visualization. R package version 0.5.0. 
+  https://CRAN.R-project.org/package=scales
+
+  Hadley Wickham (2018). 
+  stringr: Simple, Consistent Wrappers for Common String Operations. R package version 1.3.0. 
+  https://CRAN.R-project.org/package=stringr
+
+### Papers and Books
+
+
+
